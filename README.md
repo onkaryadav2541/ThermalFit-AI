@@ -3,7 +3,7 @@
 ![Python](https://img.shields.io/badge/Python-3.12-blue?style=for-the-badge&logo=python)
 ![OpenCV](https://img.shields.io/badge/Computer_Vision-Radiometric-green?style=for-the-badge&logo=opencv)
 ![MediaPipe](https://img.shields.io/badge/AI-Face_Mesh-orange?style=for-the-badge&logo=google)
-![Status](https://img.shields.io/badge/Status-Master's%20Thesis-red?style=for-the-badge)
+![Status](https://img.shields.io/badge/Status-Research_Prototype-blueviolet?style=for-the-badge)
 
 > **A Next-Gen Computer Vision system that quantifies respiratory mask leaks (1-100 Score) using thermal physics and Google AI.**
 
