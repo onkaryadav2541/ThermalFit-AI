@@ -10,58 +10,56 @@ T_MIN = 22.0  # Room Temp (Score 0)
 T_MAX = 35.0  # Breath Temp (Score 100)
 LEAK_THRESHOLD_SCORE = 45
 
-# SENSOR CONFIGURATION
-points = []
+# SENSOR NAMES
 point_names = ["Nose Bridge", "Left Cheek", "Right Cheek", "Left Chin", "Right Chin"]
-sensor_data = {name: {'score': 0, 'history': deque(maxlen=5)} for name in point_names}
-
-
-# ---------------------
-
-def click_event(event, x, y, flags, params):
-    # User clicks 5 times to set sensors
-    if event == cv2.EVENT_LBUTTONDOWN:
-        if len(points) < 5:
-            points.append((x, y))
-            # Draw marker
-            cv2.circle(params, (x, y), 5, (0, 255, 255), -1)
-            cv2.putText(params, str(len(points)), (x + 10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-            cv2.imshow('STEP 1: Calibrate Sensors', params)
+sensor_data = {name: {'score': 0, 'history': deque(maxlen=15)} for name in point_names}
+fixed_points = []  # Stores (x, y) coordinates
 
 
 def calculate_score(intensity):
-    # Convert Brightness -> Score (0-100)
+    if np.isnan(intensity): return 0
     fraction = intensity / 255.0
     real_temp = T_MIN + (fraction * (T_MAX - T_MIN))
     score = ((real_temp - T_MIN) / (T_MAX - T_MIN)) * 100
     return int(np.clip(score, 0, 100))
 
 
-def draw_dashboard(frame, sensor_data, worst_leak_name, worst_leak_score):
+def draw_dashboard(frame, sensor_data, worst_leak_score, worst_leak_name):
     h, w, _ = frame.shape
     # Sidebar Background
     cv2.rectangle(frame, (0, 0), (320, h), (0, 0, 0), -1)
 
     # Header
-    cv2.putText(frame, "MANUAL FIT MONITOR", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    cv2.putText(frame, "STATIC SENSORS", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     cv2.line(frame, (10, 50), (310, 50), (100, 100, 100), 1)
 
-    # List Sensors
+    # Sensors
     for i, (name, data) in enumerate(sensor_data.items()):
         score = data['score']
-        color = (0, 0, 255) if score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
+
+        # Color Logic
+        if score > LEAK_THRESHOLD_SCORE:
+            color = (0, 0, 255)  # Red
+        else:
+            color = (0, 255, 0)  # Green
+
         y_pos = 90 + (i * 50)
 
-        cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 200), 1)
+        # Draw Name
+        cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+
+        # Draw Bar
         bar_len = int(score * 1.5)
         cv2.rectangle(frame, (100, y_pos - 15), (100 + bar_len, y_pos + 5), color, -1)
         cv2.rectangle(frame, (100, y_pos - 15), (250, y_pos + 5), (50, 50, 50), 1)
-        cv2.putText(frame, f"{score}", (260, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # Draw Number
+        cv2.putText(frame, f"{score}", (260, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
     # Global Alert Box
     if worst_leak_score > LEAK_THRESHOLD_SCORE:
         alert_color = (0, 0, 255)
-        status_text = f"LEAK: {worst_leak_name.upper()}"
+        status_text = f"LEAK: {worst_leak_name}"
     else:
         alert_color = (0, 255, 0)
         status_text = "SEAL SECURE"
@@ -71,30 +69,53 @@ def draw_dashboard(frame, sensor_data, worst_leak_name, worst_leak_score):
 
 
 def main():
+    global fixed_points
     cap = cv2.VideoCapture(VIDEO_PATH)
-    ret, frame = cap.read()
-    if not ret: return
 
-    # --- PHASE 1: CLICK SENSORS ---
-    print("------------------------------------------------")
-    print(" PLEASE CLICK 5 POINTS: Nose, L-Cheek, R-Cheek, L-Chin, R-Chin")
-    print("------------------------------------------------")
+    # --- STEP 1: FREEZE & CLICK ---
+    # Read the first frame to display for clicking
+    ret, first_frame = cap.read()
+    if not ret:
+        print("Error: Could not read video.")
+        return
 
-    cv2.imshow('STEP 1: Calibrate Sensors', frame)
-    cv2.setMouseCallback('STEP 1: Calibrate Sensors', click_event, frame)
+    print("Video Paused. PLEASE CLICK 5 FIXED POINTS.")
+    h, w, _ = first_frame.shape
 
-    while len(points) < 5:
-        if cv2.waitKey(100) & 0xFF == ord('q'): return
+    def mouse_callback(event, x, y, flags, params):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            if len(fixed_points) < 5:
+                # Simply store the coordinate. No AI. No Tracking.
+                fixed_points.append((x, y))
+                print(f"Point {len(fixed_points)} Fixed at: {x}, {y}")
 
-    cv2.destroyAllWindows()
+    cv2.namedWindow('Calibration')
+    cv2.setMouseCallback('Calibration', mouse_callback)
 
-    # --- PHASE 2: RUN ANALYSIS ---
-    fps = cap.get(cv2.CAP_PROP_FPS)
-    if fps == 0: fps = 30
+    while len(fixed_points) < 5:
+        display_frame = first_frame.copy()
+
+        # Instructions
+        cv2.putText(display_frame, f"CLICK {5 - len(fixed_points)} POINTS", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                    (0, 255, 255), 2)
+        cv2.putText(display_frame, f"Next: {point_names[len(fixed_points)]}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                    (0, 255, 0), 2)
+
+        # Draw dots where user clicked
+        for (x, y) in fixed_points:
+            cv2.circle(display_frame, (x, y), 6, (0, 0, 255), -1)
+
+        cv2.imshow('Calibration', display_frame)
+        if cv2.waitKey(50) & 0xFF == ord('q'): return
+
+    cv2.destroyWindow('Calibration')
+
+    # --- STEP 2: RUN ANALYSIS (STATIC) ---
+    print("Starting Static Analysis...")
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
     delay = int(1000 / fps)
 
     all_session_scores = []
-    print("Starting Manual Analysis...")
 
     while True:
         ret, frame = cap.read()
@@ -106,58 +127,49 @@ def main():
         worst_name = "None"
         current_frame_avg = 0
 
-        # Loop through locked points
-        for i, (x, y) in enumerate(points):
+        for i, (x, y) in enumerate(fixed_points):
             name = point_names[i]
 
-            # Safety check
-            if y < 1 or x < 1: continue
-            roi = gray_frame[y - 1:y + 2, x - 1:x + 2]
-            intensity = np.mean(roi)
+            # 1. Measurement (At FIXED coordinates)
+            # Safety Check: Ensure point is inside frame
+            x = np.clip(x, 2, w - 3)
+            y = np.clip(y, 2, h - 3)
 
-            # Calculate
-            raw_score = calculate_score(intensity)
+            roi = gray_frame[y - 2:y + 3, x - 2:x + 3]
 
-            # Smooth
+            if roi.size > 0:
+                intensity = np.mean(roi)
+                raw_score = calculate_score(intensity)
+            else:
+                raw_score = 0
+
+            # 2. Smooth Data
             sensor_data[name]['history'].append(raw_score)
             avg_score = int(sum(sensor_data[name]['history']) / len(sensor_data[name]['history']))
             sensor_data[name]['score'] = avg_score
 
-            # Track worst
             current_frame_avg += avg_score
             if avg_score > worst_score:
                 worst_score = avg_score
                 worst_name = name
 
-            # Draw Dot
+            # 3. Draw Dot (Static)
             color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
             cv2.circle(frame, (x, y), 5, color, -1)
+            cv2.circle(frame, (x, y), 2, (255, 255, 255), -1)
 
-        # Draw Dashboard
-        draw_dashboard(frame, sensor_data, worst_name, worst_score)
+        draw_dashboard(frame, sensor_data, worst_score, worst_name)
         all_session_scores.append(current_frame_avg / 5)
 
-        cv2.imshow('Master Project - Manual Mode', frame)
-        if cv2.waitKey(delay) & 0xFF == ord('q'):
-            break
+        cv2.imshow('Final Master Project - Static', frame)
+        if cv2.waitKey(delay) & 0xFF == ord('q'): break
 
     cap.release()
     cv2.destroyAllWindows()
 
-    # --- FINAL REPORT ---
     if len(all_session_scores) > 0:
         final_avg = int(sum(all_session_scores) / len(all_session_scores))
-        print("\n" + "=" * 40)
-        print("     FINAL FIT TEST REPORT (MANUAL)")
-        print("=" * 40)
-        print(f" Total Frames Analyzed: {len(all_session_scores)}")
-        print(f" Average Fit Score:     {100 - final_avg}/100")
-        print("-" * 40)
-        if final_avg > LEAK_THRESHOLD_SCORE:
-            print(" RESULT: FAILED (Significant Leak Detected)")
-        else:
-            print(" RESULT: PASSED (Mask Fit is Secure)")
-        print("=" * 40 + "\n")
+        print(f"\nFINAL REPORT: Score {100 - final_avg}/100")
 
 
 if __name__ == '__main__':
