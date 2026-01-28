@@ -7,7 +7,7 @@
 
 > **A Next-Gen Computer Vision system that quantifies respiratory mask leaks (1-100 Score) using thermal physics and Google AI.**
 
-## 📸 Project Overview
+## 📸 Project Overview.
 Standard respiratory fit tests are subjective. This project proposes a **Quantitative (Objective)** method using Thermal Imaging. By analyzing the temperature differential between the mask surface and exhaled breath, this system detects leaks in real-time.
 
 ### 🌟 Key Features
