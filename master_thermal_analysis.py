@@ -3,7 +3,7 @@ import numpy as np
 from collections import deque
 
 # --- CONFIGURATION ---
-VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Videos\Captures\nutonguy.mp4'
+VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\with film tight rituraj.mp4'
 
 # PHYSICS CALIBRATION
 T_MIN = 22.0  # Room Temp (Score 0)
