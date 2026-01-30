@@ -3,7 +3,7 @@ import numpy as np
 from collections import deque
 
 # --- CONFIGURATION ---
-VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\with film tight rituraj.mp4'
+VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\without film loose elvis.mp4'
 
 # PHYSICS CALIBRATION
 T_MIN = 22.0  # Room Temp (Score 0)
@@ -103,7 +103,7 @@ def main():
 
         # Draw dots where user clicked
         for (x, y) in fixed_points:
-            cv2.circle(display_frame, (x, y), 6, (0, 0, 255), -1)
+            cv2.circle(display_frame, (x, y), 8, (0, 0, 255), -1)
 
         cv2.imshow('Calibration', display_frame)
         if cv2.waitKey(50) & 0xFF == ord('q'): return
@@ -132,10 +132,11 @@ def main():
 
             # 1. Measurement (At FIXED coordinates)
             # Safety Check: Ensure point is inside frame
-            x = np.clip(x, 2, w - 3)
-            y = np.clip(y, 2, h - 3)
+            x = np.clip(x, 6, w - 7)  # Adjusted clip for bigger box
+            y = np.clip(y, 6, h - 7)
 
-            roi = gray_frame[y - 2:y + 3, x - 2:x + 3]
+            # INCREASED SENSING AREA (12x12 pixels instead of 5x5)
+            roi = gray_frame[y - 6:y + 6, x - 6:x + 6]
 
             if roi.size > 0:
                 intensity = np.mean(roi)
@@ -153,10 +154,13 @@ def main():
                 worst_score = avg_score
                 worst_name = name
 
-            # 3. Draw Dot (Static)
+            # 3. Draw Dot (Static & LARGER)
             color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
-            cv2.circle(frame, (x, y), 5, color, -1)
-            cv2.circle(frame, (x, y), 2, (255, 255, 255), -1)
+
+            # Big colored circle (Radius 12)
+            cv2.circle(frame, (x, y), 12, color, -1)
+            # White center dot (Radius 4) for precision look
+            cv2.circle(frame, (x, y), 4, (255, 255, 255), -1)
 
         draw_dashboard(frame, sensor_data, worst_score, worst_name)
         all_session_scores.append(current_frame_avg / 5)
