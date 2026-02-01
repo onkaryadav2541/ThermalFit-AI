@@ -102,7 +102,7 @@ def main():
         cv2.destroyWindow('Calibration')
 
         # --- PHASE 2: STATIC ANALYSIS ---
-        print("Starting Analysis... REWINDING VIDEO")
+        print("REWINDING VIDEO")
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
