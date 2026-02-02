@@ -15,7 +15,16 @@ LEAK_THRESHOLD_SCORE = 45
 DOT_RADIUS = 12  # Big visible dots
 SENSING_AREA = 6  # Radius of reading (Total box = 12x12 pixels)
 
-point_names = ["Nose Bridge", "Left Cheek", "Right Cheek", "Left Chin", "Right Chin"]
+# *** UPDATED: 6 POINTS NOW ***
+point_names = [
+    "Nose Bridge",
+    "Left Cheek",
+    "Right Cheek",
+    "Left Chin",
+    "Right Chin",
+    "Center Chin"  # <-- Added 6th Point
+]
+
 sensor_data = {name: {'score': 0, 'history': deque(maxlen=10)} for name in point_names}
 fixed_points = []
 
@@ -30,7 +39,7 @@ def calculate_score(intensity):
 
 def draw_dashboard(frame, sensor_data, worst_leak_score, worst_leak_name):
     h, w, _ = frame.shape
-    # Draw Panel
+    # Draw Panel (Made slightly taller for 6th point)
     cv2.rectangle(frame, (0, 0), (320, h), (10, 10, 10), -1)
     cv2.putText(frame, "STATIC SENSORS", (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
     cv2.line(frame, (10, 50), (310, 50), (100, 100, 100), 1)
@@ -40,17 +49,18 @@ def draw_dashboard(frame, sensor_data, worst_leak_score, worst_leak_name):
         # Color Logic
         color = (0, 0, 255) if score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
 
-        y_pos = 90 + (i * 60)
+        # Adjusted spacing to fit 6 points nicely
+        y_pos = 90 + (i * 55)
 
-        cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
 
         # Bar Graph
         bar_len = int(score * 1.5)
-        cv2.rectangle(frame, (100, y_pos - 15), (100 + bar_len, y_pos + 5), color, -1)
-        cv2.rectangle(frame, (100, y_pos - 15), (250, y_pos + 5), (50, 50, 50), 1)
+        cv2.rectangle(frame, (110, y_pos - 10), (110 + bar_len, y_pos + 5), color, -1)
+        cv2.rectangle(frame, (110, y_pos - 10), (260, y_pos + 5), (50, 50, 50), 1)
 
         # Score Number
-        cv2.putText(frame, f"{score}", (260, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        cv2.putText(frame, f"{score}", (270, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1)
 
     # Status Box
     if worst_leak_score > LEAK_THRESHOLD_SCORE:
@@ -61,7 +71,7 @@ def draw_dashboard(frame, sensor_data, worst_leak_score, worst_leak_name):
         status_text = "SEAL SECURE"
 
     cv2.rectangle(frame, (10, h - 80), (310, h - 20), alert_color, -1)
-    cv2.putText(frame, status_text, (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    cv2.putText(frame, status_text, (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
 
 
 def main():
@@ -76,20 +86,21 @@ def main():
             return
 
         h, w, _ = first_frame.shape
-        print(f"Video Paused. CLICK 5 FIXED POINTS.")
+        print(f"Video Paused. CLICK 6 FIXED POINTS.")
 
         def mouse_callback(event, x, y, flags, params):
-            if event == cv2.EVENT_LBUTTONDOWN and len(fixed_points) < 5:
-                # Just store the X,Y coordinate. No AI.
+            # Update limit to 6
+            if event == cv2.EVENT_LBUTTONDOWN and len(fixed_points) < 6:
                 fixed_points.append((x, y))
                 print(f"Fixed Point {len(fixed_points)} at {x},{y}")
 
         cv2.namedWindow('Calibration')
         cv2.setMouseCallback('Calibration', mouse_callback)
 
-        while len(fixed_points) < 5:
+        # Update loop to wait for 6 points
+        while len(fixed_points) < 6:
             disp = first_frame.copy()
-            cv2.putText(disp, f"CLICK {5 - len(fixed_points)} POINTS", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+            cv2.putText(disp, f"CLICK {6 - len(fixed_points)} POINTS", (20, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                         (0, 255, 255), 2)
             cv2.putText(disp, f"Next: {point_names[len(fixed_points)]}", (20, 90), cv2.FONT_HERSHEY_SIMPLEX, 1,
                         (0, 255, 0), 2)
@@ -102,7 +113,7 @@ def main():
         cv2.destroyWindow('Calibration')
 
         # --- PHASE 2: STATIC ANALYSIS ---
-        print("REWINDING VIDEO")
+        print("Starting Analysis... REWINDING VIDEO")
         cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
         fps = cap.get(cv2.CAP_PROP_FPS) or 30
@@ -166,7 +177,8 @@ def main():
             draw_dashboard(frame, sensor_data, worst_score, worst_name)
 
             total_frames_analyzed += 1
-            all_session_scores.append(current_frame_avg / 5)
+            # Average of 6 points now
+            all_session_scores.append(current_frame_avg / 6)
 
             cv2.imshow('Final Master Project - Static', frame)
             if cv2.waitKey(delay) & 0xFF == ord('q'): break
@@ -186,13 +198,11 @@ def main():
                 frames_leaked = leak_duration_counters[name]
                 percent_leaked = (frames_leaked / total_frames_analyzed) * 100
 
-                if percent_leaked > 5:  # If leaked more than 5% of time
+                if percent_leaked > 5:  # Fail if > 5% time leaking
                     status = "FAIL - LEAK DETECTED"
                     failed_locations.append(name)
-                    color_code = "\033[91m"  # Red text code (works in some terminals)
                 else:
                     status = "PASS - SECURE"
-                    color_code = "\033[92m"  # Green text code
 
                 print(f"{name:.<25} {status} ({int(percent_leaked)}% of time)")
 
