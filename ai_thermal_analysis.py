@@ -4,7 +4,10 @@ import numpy as np
 from collections import deque
 
 # --- CONFIGURATION ---
-VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Videos\Captures\nutonguy.mp4'
+# *** PASTE YOUR NEW PATH BELOW INSIDE THE QUOTES ***
+VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\without film loose elvis.mp4'
+# ^^^^^ UPDATE THIS PATH ^^^^^
+
 LEAK_THRESHOLD_SCORE = 45
 
 # STABILITY
@@ -85,7 +88,10 @@ def main():
 
     # 1. AUTO-CALIBRATE INTENSITY
     ret, frame = cap.read()
-    if not ret: return
+    if not ret:
+        print(f"Error: Could not read video at {VIDEO_PATH}")
+        return
+
     global_max_pixel = auto_calibrate(frame)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
