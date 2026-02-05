@@ -7,10 +7,12 @@ from collections import deque
 VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\without film loose elvis.mp4'
 LEAK_THRESHOLD_SCORE = 45
 
-# --- MAXIMUM STABILITY SETTINGS ---
-# 1. Deadzone: Face must move > 12 pixels to trigger an update.
-DEADZONE = 12
-# 2. Smoothing: 0.05 is VERY slow/heavy. (Prevents micro-jitter)
+# --- ANTI-DRIFT SETTINGS ---
+# 1. Sticky Lock: Face must move > 15 pixels to break the lock.
+#    This prevents "slow drifting" while sitting still.
+DEADZONE = 15
+
+# 2. Heavy Weight: When it does move, it moves like a tank (slowly).
 SMOOTH_FACTOR = 0.05
 
 # --- INTERACTIVE VARIABLES ---
@@ -29,10 +31,8 @@ BASE_OFFSETS = {
 }
 
 # STATE
-sensor_data = {name: {'score': 0, 'history': deque(maxlen=20)} for name in
-               BASE_OFFSETS}  # Longer history for smoother scores
+sensor_data = {name: {'score': 0, 'history': deque(maxlen=20)} for name in BASE_OFFSETS}
 last_center = None
-t_max_calibrated = 35.0
 
 
 def auto_calibrate(frame):
@@ -51,11 +51,16 @@ def draw_dashboard(frame, sensor_data, worst_leak, worst_score, is_locked):
     cv2.rectangle(frame, (0, 0), (320, h), (15, 15, 15), -1)
 
     # Header
-    cv2.putText(frame, "HEAVY STABILIZATION", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(frame, "ANTI-DRIFT SYSTEM", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     # Status Light
-    color = (0, 255, 0) if is_locked else (0, 165, 255)  # Green=Locked, Orange=Moving
-    text = "STATUS: LOCKED" if is_locked else "STATUS: UPDATING"
+    if is_locked:
+        color = (0, 255, 0)  # Green
+        text = "STATUS: GLUED"
+    else:
+        color = (0, 165, 255)  # Orange
+        text = "STATUS: MOVING..."
+
     cv2.circle(frame, (290, 25), 6, color, -1)
     cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
 
@@ -109,12 +114,12 @@ def main():
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         results = face_mesh.process(rgb_frame)
 
-        is_locked = True
+        is_locked = True  # Default assumption: We are glued in place
 
-        # --- HEAVY RIGID TRACKING ---
         if results.multi_face_landmarks:
             face = results.multi_face_landmarks[0]
-            # Use average of ALL points for maximum stability (Center of Gravity)
+
+            # Use Center of Gravity (Average of all points)
             xs = [lm.x for lm in face.landmark]
             ys = [lm.y for lm in face.landmark]
             avg_x, avg_y = int((sum(xs) / len(xs)) * w), int((sum(ys) / len(ys)) * h)
@@ -122,17 +127,20 @@ def main():
             if last_center is None:
                 last_center = (avg_x, avg_y)
             else:
-                # Calculate distance moved
+                # --- DRIFT PROTECTION LOGIC ---
                 dist = np.sqrt((avg_x - last_center[0]) ** 2 + (avg_y - last_center[1]) ** 2)
 
-                # STRICT DEADZONE: If moved less than 12 pixels, DO NOT UPDATE
+                # If movement is < 15 pixels, we IGNORE IT completely.
+                # The dots stay "Glued" to the old position.
                 if dist > DEADZONE:
                     is_locked = False
-                    # HEAVY SMOOTHING: Move very slowly to the new position
+                    # Only if we move A LOT, do we slowly transition
                     new_x = int((SMOOTH_FACTOR * last_center[0]) + ((1 - SMOOTH_FACTOR) * avg_x))
                     new_y = int((SMOOTH_FACTOR * last_center[1]) + ((1 - SMOOTH_FACTOR) * avg_y))
                     last_center = (new_x, new_y)
-                # Else: last_center remains exactly the same (Locked)
+
+                # Else: last_center remains UNCHANGED.
+                # This prevents the "slow creep" or "shifting by itself".
 
         # --- DRAW DOTS ---
         worst_score = 0
@@ -140,11 +148,10 @@ def main():
 
         if last_center is not None:
             cx, cy = last_center
-
-            # Yellow Anchor
-            cv2.circle(frame, (cx, cy), 5, (0, 255, 255), -1)
+            cv2.circle(frame, (cx, cy), 5, (0, 255, 255), -1)  # Anchor
 
             for name, (bx, by) in BASE_OFFSETS.items():
+                # Apply Offsets
                 final_x = cx + int(bx * SCALE_FACTOR) + GLOBAL_OFFSET_X
                 final_y = cy + int(by * SCALE_FACTOR) + GLOBAL_OFFSET_Y
 
@@ -171,7 +178,7 @@ def main():
                 cv2.circle(frame, (final_x, final_y), 3, (255, 255, 255), -1)
 
         draw_dashboard(frame, sensor_data, worst_name, worst_score, is_locked)
-        cv2.imshow('AI Stabilized - WASD to Adjust', frame)
+        cv2.imshow('AI Anti-Drift - WASD to Adjust', frame)
 
         key = cv2.waitKey(delay) & 0xFF
         if key == ord('q'):
