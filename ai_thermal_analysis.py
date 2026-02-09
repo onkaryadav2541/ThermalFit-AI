@@ -26,8 +26,6 @@ BASE_OFFSETS = {
 sensor_data = {name: {'score': 0, 'history': deque(maxlen=20)} for name in BASE_OFFSETS}
 last_center = None
 is_setup_mode = True
-
-# *** NEW: LIST TO STORE SCORES FOR FINAL REPORT ***
 session_fit_scores = []
 
 
@@ -38,28 +36,26 @@ def auto_calibrate(frame):
 
 def calculate_score(intensity, max_pixel_val):
     if np.isnan(intensity): return 0
-    # Avoid division by zero
     if max_pixel_val == 0: return 0
     fraction = intensity / max_pixel_val
     return int(np.clip(fraction * 100, 0, 100))
 
 
-def draw_dashboard(frame, sensor_data, worst_leak, worst_score, is_setup, live_fit_score):
+def draw_dashboard(frame, sensor_data, worst_score, is_setup, live_fit_score):
     h, w, _ = frame.shape
     cv2.rectangle(frame, (0, 0), (320, h), (15, 15, 15), -1)
 
     # Header
     cv2.putText(frame, "THERMAL FIT AI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    # Status Light
     if is_setup:
-        color = (0, 165, 255)  # Orange
+        color = (0, 165, 255)
         text = "MODE: SETUP (WASD)"
         smooth_text = "Tracking: FAST"
     else:
-        color = (0, 255, 0)  # Green
+        color = (0, 255, 0)
         text = "MODE: LOCKED"
-        smooth_text = "Tracking: HEAVY"
+        smooth_text = "Tracking: STABILIZED"
 
     cv2.circle(frame, (290, 25), 6, color, -1)
     cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
@@ -69,21 +65,18 @@ def draw_dashboard(frame, sensor_data, worst_leak, worst_score, is_setup, live_f
     fit_color = (0, 255, 0) if live_fit_score > 60 else (0, 0, 255)
     cv2.putText(frame, "FIT SCORE:", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
     cv2.putText(frame, f"{live_fit_score}", (200, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.9, fit_color, 2)
-
     cv2.line(frame, (10, 130), (310, 130), (100, 100, 100), 1)
 
     for i, (name, data) in enumerate(sensor_data.items()):
         score = data['score']
         color = (0, 0, 255) if score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
         y_pos = 170 + (i * 60)
-
         cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
         bar_len = int(score * 1.5)
         cv2.rectangle(frame, (110, y_pos - 15), (110 + bar_len, y_pos + 5), color, -1)
         cv2.rectangle(frame, (110, y_pos - 15), (250, y_pos + 5), (50, 50, 50), 1)
         cv2.putText(frame, f"{score}", (260, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
-    # Overall Alert
     if worst_score > LEAK_THRESHOLD_SCORE:
         cv2.rectangle(frame, (10, h - 80), (310, h - 20), (0, 0, 255), -1)
         cv2.putText(frame, "LEAK DETECTED", (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -91,7 +84,6 @@ def draw_dashboard(frame, sensor_data, worst_leak, worst_score, is_setup, live_f
         cv2.rectangle(frame, (10, h - 80), (310, h - 20), (0, 255, 0), -1)
         cv2.putText(frame, "SEAL SECURE", (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
 
-    # Instructions Overlay (Bottom)
     cv2.putText(frame, "[SPACE] Lock/Unlock   [WASD] Adjust", (340, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                 (255, 255, 255), 1)
 
@@ -104,12 +96,10 @@ def main():
         mp_face_mesh = mp.solutions.face_mesh
         face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
     except AttributeError:
-        print("Error: MediaPipe broken. Please run with Python 3.10")
+        print("Error: MediaPipe broken. Use Python 3.10")
         return
 
     cap = cv2.VideoCapture(VIDEO_PATH)
-
-    # 2. CALIBRATION
     ret, frame = cap.read()
     if not ret: return
     global_max_pixel = auto_calibrate(frame)
@@ -118,13 +108,11 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     delay = int(1000 / fps)
 
-    print("Starting AI Analysis...")
+    print("System Loaded.")
 
     while True:
         ret, frame = cap.read()
-        if not ret:
-            # Video Ended
-            break
+        if not ret: break
 
         h, w, _ = frame.shape
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -136,24 +124,35 @@ def main():
             face = results.multi_face_landmarks[0]
             xs = [lm.x for lm in face.landmark]
             ys = [lm.y for lm in face.landmark]
+
+            # Raw Current Position (Jittery)
             target_x = int((sum(xs) / len(xs)) * w)
             target_y = int((sum(ys) / len(ys)) * h)
 
+            # --- THE FIX: STABILIZATION MATH ---
             if is_setup_mode:
-                smooth = 0.6
+                # Setup Mode: Fast tracking (Responsive)
+                # 80% New Data, 20% Old Data
+                alpha = 0.8
             else:
-                smooth = 0.05
+                # Locked Mode: SUPER STABLE
+                # 5% New Data, 95% Old Data (Stops the shaking)
+                alpha = 0.05
 
             if last_center is None:
                 last_center = (target_x, target_y)
             else:
-                new_x = int((smooth * last_center[0]) + ((1 - smooth) * target_x))
-                new_y = int((smooth * last_center[1]) + ((1 - smooth) * target_y))
+                # This formula now correctly prioritized stability
+                old_x, old_y = last_center
+
+                new_x = int((old_x * (1 - alpha)) + (target_x * alpha))
+                new_y = int((old_y * (1 - alpha)) + (target_y * alpha))
+
                 last_center = (new_x, new_y)
 
         # --- DRAW & MEASURE ---
         worst_score = 0
-        total_leak_score = 0  # Changed name for clarity
+        total_leak_score = 0
 
         if last_center is not None:
             cx, cy = last_center
@@ -176,44 +175,31 @@ def main():
                 sensor_data[name]['history'].append(raw_score)
                 avg_score = int(sum(sensor_data[name]['history']) / len(sensor_data[name]['history']))
                 sensor_data[name]['score'] = avg_score
-
-                # Add this sensor's heat to the total for this frame
                 total_leak_score += avg_score
 
-                if avg_score > worst_score:
-                    worst_score = avg_score
+                if avg_score > worst_score: worst_score = avg_score
 
                 color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
                 cv2.circle(frame, (final_x, final_y), 10, color, -1)
                 cv2.circle(frame, (final_x, final_y), 3, (255, 255, 255), -1)
 
-        # --- CALCULATE SCORES ---
+        # Calculate Scores
         live_fit_score = 0
         if len(BASE_OFFSETS) > 0:
-            # 1. Calculate Average Heat for THIS frame
             avg_frame_heat = total_leak_score / len(BASE_OFFSETS)
-
-            # 2. Calculate Fit Score (100 - Heat)
             live_fit_score = max(0, 100 - int(avg_frame_heat))
 
-            # 3. *** SAVE FOR FINAL REPORT ***
-            # Only save if we are "Locked" (recording real data), not in Setup mode
             if not is_setup_mode:
                 session_fit_scores.append(live_fit_score)
 
-        draw_dashboard(frame, sensor_data, "Leak", worst_score, is_setup_mode, live_fit_score)
-        cv2.imshow('AI Thermal Analysis - [SPACE] to Lock', frame)
+        draw_dashboard(frame, sensor_data, worst_score, is_setup_mode, live_fit_score)
+        cv2.imshow('AI Thermal Analysis', frame)
 
-        # --- CONTROLS ---
         key = cv2.waitKey(delay) & 0xFF
         if key == ord('q'):
             break
         elif key == ord(' '):
             is_setup_mode = not is_setup_mode
-            if not is_setup_mode:
-                print(">> SYSTEM LOCKED. Recording Fit Scores...")
-            else:
-                print(">> SETUP MODE. Paused Recording.")
 
         if is_setup_mode:
             if key == ord('w'):
@@ -232,26 +218,16 @@ def main():
     cap.release()
     cv2.destroyAllWindows()
 
-    # --- FINAL REPORT PRINT ---
+    # --- FINAL REPORT ---
     print("\n" + "=" * 50)
     print("          FINAL AI REPORT")
     print("=" * 50)
-
     if len(session_fit_scores) > 0:
         final_average = int(sum(session_fit_scores) / len(session_fit_scores))
-
         print(f"Total Frames Analyzed: {len(session_fit_scores)}")
         print(f"FINAL FIT SCORE:       {final_average}/100")
-
-        if final_average > 85:
-            print("RESULT:                PASS (Excellent Seal)")
-        elif final_average > 70:
-            print("RESULT:                PASS (Acceptable)")
-        else:
-            print("RESULT:                FAIL (Significant Leaks Detected)")
     else:
-        print("No data recorded. (Did you forget to press SPACE to Lock?)")
-
+        print("No data recorded.")
     print("=" * 50)
 
 
