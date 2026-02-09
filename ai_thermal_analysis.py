@@ -2,124 +2,218 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from collections import deque
+import sys
 
 # --- CONFIGURATION ---
 VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\without film loose elvis.mp4'
 LEAK_THRESHOLD_SCORE = 45
 
-# --- MAPPING DOTS TO FACE MESH INDICES ---
-# These indices correspond to the MediaPipe Face Mesh map
-LANDMARK_MAP = {
-    "Nose Bridge": 6,
-    "Left Cheek": 234,
-    "Right Cheek": 454,
-    "Left Chin": 132,
-    "Right Chin": 361,
-    "Center Chin": 152
+# --- INTERACTIVE VARIABLES ---
+GLOBAL_OFFSET_X = 0
+GLOBAL_OFFSET_Y = 20
+SCALE_FACTOR = 1.0
+
+BASE_OFFSETS = {
+    "Nose Bridge": (0, -20),
+    "Left Cheek": (-40, 10),
+    "Right Cheek": (40, 10),
+    "Left Chin": (-25, 60),
+    "Right Chin": (25, 60),
+    "Center Chin": (0, 70)
 }
 
-# INTERACTIVE ADJUSTMENTS
-GLOBAL_OFFSET_X = 0
-GLOBAL_OFFSET_Y = 0
+# STATE
+sensor_data = {name: {'score': 0, 'history': deque(maxlen=20)} for name in BASE_OFFSETS}
+last_center = None
 is_setup_mode = True
 
-sensor_data = {name: {'score': 0, 'history': deque(maxlen=20)} for name in LANDMARK_MAP}
+# *** NEW: LIST TO STORE SCORES FOR FINAL REPORT ***
+session_fit_scores = []
+
+
+def auto_calibrate(frame):
+    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+    return np.max(gray)
 
 
 def calculate_score(intensity, max_pixel_val):
-    if np.isnan(intensity) or max_pixel_val == 0: return 0
+    if np.isnan(intensity): return 0
+    # Avoid division by zero
+    if max_pixel_val == 0: return 0
     fraction = intensity / max_pixel_val
     return int(np.clip(fraction * 100, 0, 100))
 
 
-def draw_dashboard(frame, sensor_data, worst_score, is_setup, live_fit_score):
+def draw_dashboard(frame, sensor_data, worst_leak, worst_score, is_setup, live_fit_score):
     h, w, _ = frame.shape
-    # Side Panel
     cv2.rectangle(frame, (0, 0), (320, h), (15, 15, 15), -1)
+
+    # Header
     cv2.putText(frame, "THERMAL FIT AI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
-    status_color = (0, 165, 255) if is_setup else (0, 255, 0)
-    status_text = "MODE: ADJUSTING" if is_setup else "MODE: LOCKED"
-    cv2.putText(frame, status_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, status_color, 2)
+    # Status Light
+    if is_setup:
+        color = (0, 165, 255)  # Orange
+        text = "MODE: SETUP (WASD)"
+        smooth_text = "Tracking: FAST"
+    else:
+        color = (0, 255, 0)  # Green
+        text = "MODE: LOCKED"
+        smooth_text = "Tracking: HEAVY"
+
+    cv2.circle(frame, (290, 25), 6, color, -1)
+    cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+    cv2.putText(frame, smooth_text, (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
     # Fit Score
-    cv2.putText(frame, f"FIT SCORE: {live_fit_score}%", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    fit_color = (0, 255, 0) if live_fit_score > 60 else (0, 0, 255)
+    cv2.putText(frame, "FIT SCORE:", (10, 110), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+    cv2.putText(frame, f"{live_fit_score}", (200, 115), cv2.FONT_HERSHEY_SIMPLEX, 0.9, fit_color, 2)
+
+    cv2.line(frame, (10, 130), (310, 130), (100, 100, 100), 1)
 
     for i, (name, data) in enumerate(sensor_data.items()):
         score = data['score']
         color = (0, 0, 255) if score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
         y_pos = 170 + (i * 60)
-        cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
-        cv2.rectangle(frame, (110, y_pos - 15), (110 + int(score * 1.5), y_pos + 5), color, -1)
+
+        cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
+        bar_len = int(score * 1.5)
+        cv2.rectangle(frame, (110, y_pos - 15), (110 + bar_len, y_pos + 5), color, -1)
+        cv2.rectangle(frame, (110, y_pos - 15), (250, y_pos + 5), (50, 50, 50), 1)
+        cv2.putText(frame, f"{score}", (260, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+
+    # Overall Alert
+    if worst_score > LEAK_THRESHOLD_SCORE:
+        cv2.rectangle(frame, (10, h - 80), (310, h - 20), (0, 0, 255), -1)
+        cv2.putText(frame, "LEAK DETECTED", (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+    else:
+        cv2.rectangle(frame, (10, h - 80), (310, h - 20), (0, 255, 0), -1)
+        cv2.putText(frame, "SEAL SECURE", (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+
+    # Instructions Overlay (Bottom)
+    cv2.putText(frame, "[SPACE] Lock/Unlock   [WASD] Adjust", (340, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                (255, 255, 255), 1)
 
 
 def main():
-    global GLOBAL_OFFSET_X, GLOBAL_OFFSET_Y, is_setup_mode
+    global last_center, GLOBAL_OFFSET_X, GLOBAL_OFFSET_Y, SCALE_FACTOR, is_setup_mode
 
-    mp_face_mesh = mp.solutions.face_mesh
-    face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True, min_detection_confidence=0.5)
+    # 1. SETUP MEDIA PIPE
+    try:
+        mp_face_mesh = mp.solutions.face_mesh
+        face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
+    except AttributeError:
+        print("Error: MediaPipe broken. Please run with Python 3.10")
+        return
 
     cap = cv2.VideoCapture(VIDEO_PATH)
+
+    # 2. CALIBRATION
     ret, frame = cap.read()
     if not ret: return
+    global_max_pixel = auto_calibrate(frame)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
-    # Auto-calibration for "hot" spots
-    global_max_pixel = np.max(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 30
+    delay = int(1000 / fps)
 
-    while cap.isOpened():
+    print("Starting AI Analysis...")
+
+    while True:
         ret, frame = cap.read()
-        if not ret: break
+        if not ret:
+            # Video Ended
+            break
 
         h, w, _ = frame.shape
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         gray_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
         results = face_mesh.process(rgb_frame)
 
-        worst_score = 0
-        total_leak = 0
-
+        # --- TRACKING LOGIC ---
         if results.multi_face_landmarks:
-            face_landmarks = results.multi_face_landmarks[0]
+            face = results.multi_face_landmarks[0]
+            xs = [lm.x for lm in face.landmark]
+            ys = [lm.y for lm in face.landmark]
+            target_x = int((sum(xs) / len(xs)) * w)
+            target_y = int((sum(ys) / len(ys)) * h)
 
-            for name, index in LANDMARK_MAP.items():
-                # Get the actual landmark coordinate
-                lm = face_landmarks.landmark[index]
+            if is_setup_mode:
+                smooth = 0.6
+            else:
+                smooth = 0.05
 
-                # Convert normalized to pixel coordinates
-                # Adding Global Offsets for fine-tuning the mask seal location
-                px_x = int(lm.x * w) + GLOBAL_OFFSET_X
-                px_y = int(lm.y * h) + GLOBAL_OFFSET_Y
+            if last_center is None:
+                last_center = (target_x, target_y)
+            else:
+                new_x = int((smooth * last_center[0]) + ((1 - smooth) * target_x))
+                new_y = int((smooth * last_center[1]) + ((1 - smooth) * target_y))
+                last_center = (new_x, new_y)
 
-                px_x = np.clip(px_x, 10, w - 10)
-                px_y = np.clip(px_y, 10, h - 10)
+        # --- DRAW & MEASURE ---
+        worst_score = 0
+        total_leak_score = 0  # Changed name for clarity
 
-                # Sample Thermal Data (ROI)
-                roi = gray_frame[px_y - 5:px_y + 5, px_x - 5:px_x + 5]
-                raw_score = calculate_score(np.mean(roi), global_max_pixel) if roi.size > 0 else 0
+        if last_center is not None:
+            cx, cy = last_center
+            anchor_color = (0, 165, 255) if is_setup_mode else (0, 255, 0)
+            cv2.circle(frame, (cx, cy), 5, anchor_color, -1)
 
-                # Smoothing the score
+            for name, (bx, by) in BASE_OFFSETS.items():
+                final_x = cx + int(bx * SCALE_FACTOR) + GLOBAL_OFFSET_X
+                final_y = cy + int(by * SCALE_FACTOR) + GLOBAL_OFFSET_Y
+
+                final_x = np.clip(final_x, 6, w - 7)
+                final_y = np.clip(final_y, 6, h - 7)
+
+                roi = gray_frame[final_y - 6:final_y + 6, final_x - 6:final_x + 6]
+                if roi.size > 0:
+                    raw_score = calculate_score(np.mean(roi), global_max_pixel)
+                else:
+                    raw_score = 0
+
                 sensor_data[name]['history'].append(raw_score)
                 avg_score = int(sum(sensor_data[name]['history']) / len(sensor_data[name]['history']))
                 sensor_data[name]['score'] = avg_score
-                total_leak += avg_score
-                worst_score = max(worst_score, avg_score)
 
-                # Draw point on face
-                dot_color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
-                cv2.circle(frame, (px_x, px_y), 6, dot_color, -1)
-                cv2.circle(frame, (px_x, px_y), 2, (255, 255, 255), -1)
+                # Add this sensor's heat to the total for this frame
+                total_leak_score += avg_score
 
-        # Calculate Final Stats
-        fit_score = max(0, 100 - (total_leak // len(LANDMARK_MAP)))
-        draw_dashboard(frame, sensor_data, worst_score, is_setup_mode, fit_score)
+                if avg_score > worst_score:
+                    worst_score = avg_score
 
-        cv2.imshow('Automatic Thermal Mask Fit', frame)
+                color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
+                cv2.circle(frame, (final_x, final_y), 10, color, -1)
+                cv2.circle(frame, (final_x, final_y), 3, (255, 255, 255), -1)
 
-        key = cv2.waitKey(1) & 0xFF
+        # --- CALCULATE SCORES ---
+        live_fit_score = 0
+        if len(BASE_OFFSETS) > 0:
+            # 1. Calculate Average Heat for THIS frame
+            avg_frame_heat = total_leak_score / len(BASE_OFFSETS)
+
+            # 2. Calculate Fit Score (100 - Heat)
+            live_fit_score = max(0, 100 - int(avg_frame_heat))
+
+            # 3. *** SAVE FOR FINAL REPORT ***
+            # Only save if we are "Locked" (recording real data), not in Setup mode
+            if not is_setup_mode:
+                session_fit_scores.append(live_fit_score)
+
+        draw_dashboard(frame, sensor_data, "Leak", worst_score, is_setup_mode, live_fit_score)
+        cv2.imshow('AI Thermal Analysis - [SPACE] to Lock', frame)
+
+        # --- CONTROLS ---
+        key = cv2.waitKey(delay) & 0xFF
         if key == ord('q'):
             break
         elif key == ord(' '):
             is_setup_mode = not is_setup_mode
+            if not is_setup_mode:
+                print(">> SYSTEM LOCKED. Recording Fit Scores...")
+            else:
+                print(">> SETUP MODE. Paused Recording.")
 
         if is_setup_mode:
             if key == ord('w'):
@@ -130,9 +224,35 @@ def main():
                 GLOBAL_OFFSET_X -= 2
             elif key == ord('d'):
                 GLOBAL_OFFSET_X += 2
+            elif key == ord('z'):
+                SCALE_FACTOR -= 0.05
+            elif key == ord('x'):
+                SCALE_FACTOR += 0.05
 
     cap.release()
     cv2.destroyAllWindows()
+
+    # --- FINAL REPORT PRINT ---
+    print("\n" + "=" * 50)
+    print("          FINAL AI REPORT")
+    print("=" * 50)
+
+    if len(session_fit_scores) > 0:
+        final_average = int(sum(session_fit_scores) / len(session_fit_scores))
+
+        print(f"Total Frames Analyzed: {len(session_fit_scores)}")
+        print(f"FINAL FIT SCORE:       {final_average}/100")
+
+        if final_average > 85:
+            print("RESULT:                PASS (Excellent Seal)")
+        elif final_average > 70:
+            print("RESULT:                PASS (Acceptable)")
+        else:
+            print("RESULT:                FAIL (Significant Leaks Detected)")
+    else:
+        print("No data recorded. (Did you forget to press SPACE to Lock?)")
+
+    print("=" * 50)
 
 
 if __name__ == '__main__':
