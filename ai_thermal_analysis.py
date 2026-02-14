@@ -7,14 +7,16 @@ from collections import deque
 VIDEO_PATH = r'C:\Users\Sakshi\OneDrive\Desktop\Screen Recordings\without film loose elvis.mp4'
 LEAK_THRESHOLD_SCORE = 45
 
+# --- POSITION CORRECTION (THE FIX) ---
+# If points are too far RIGHT, we use a negative number here to move them LEFT.
+# Try -40, -50, or -60 until it hits the face perfectly.
+MOVE_ALL_POINTS_LEFT_RIGHT = -40  # Negative = Left, Positive = Right
+MOVE_ALL_POINTS_UP_DOWN = 0  # Negative = Up, Positive = Down
+
 # --- STABILIZER SETTINGS ---
-# 0.1 = Extremely Stable (Heavy)
-# 0.5 = Balanced
-# 0.9 = No Stabilization (Shaky)
 STABILITY_STRENGTH = 0.1
 
 # --- LANDMARK DEFINITIONS ---
-# Using the most stable points on the face mesh
 LANDMARK_IDS = {
     "Nose Bridge": 168,
     "Left Cheek": 118,
@@ -38,10 +40,8 @@ class PointStabilizer:
             self.prev_y = new_y
             return int(new_x), int(new_y)
         else:
-            # The Smoothing Formula
             smoothed_x = (self.prev_x * (1 - self.alpha)) + (new_x * self.alpha)
             smoothed_y = (self.prev_y * (1 - self.alpha)) + (new_y * self.alpha)
-
             self.prev_x = smoothed_x
             self.prev_y = smoothed_y
             return int(smoothed_x), int(smoothed_y)
@@ -70,7 +70,7 @@ def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
     h, w, _ = frame.shape
     cv2.rectangle(frame, (0, 0), (320, h), (10, 10, 10), -1)
 
-    cv2.putText(frame, "STABILIZED AI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(frame, "CENTERED AI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     if not is_locked:
         color = (0, 165, 255)
@@ -82,13 +82,11 @@ def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
     cv2.circle(frame, (290, 25), 6, color, -1)
     cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-    # Fit Score
     fit_color = (0, 255, 0) if live_fit_score > 60 else (0, 0, 255)
     cv2.putText(frame, "LIVE FIT SCORE:", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
     cv2.putText(frame, f"{live_fit_score}", (200, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.9, fit_color, 2)
     cv2.line(frame, (10, 140), (310, 140), (50, 50, 50), 1)
 
-    # Sensor Bars
     for i, (name, data) in enumerate(sensor_data.items()):
         score = data['score']
         color = (0, 0, 255) if score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
@@ -99,7 +97,6 @@ def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
         cv2.rectangle(frame, (110, y_pos - 15), (250, y_pos + 5), (50, 50, 50), 1)
         cv2.putText(frame, f"{score}", (260, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
 
-    # Alert Box
     if worst_score > LEAK_THRESHOLD_SCORE:
         cv2.rectangle(frame, (10, h - 80), (310, h - 20), (0, 0, 255), -1)
         cv2.putText(frame, "LEAK DETECTED", (20, h - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
@@ -113,12 +110,11 @@ def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
 def main():
     global is_locked
 
-    # 1. SETUP MEDIA PIPE (Must use Python 3.10!)
     try:
         mp_face_mesh = mp.solutions.face_mesh
         face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
     except AttributeError:
-        print("CRITICAL ERROR: Please use Python 3.10.")
+        print("Error: Use Python 3.10")
         return
 
     cap = cv2.VideoCapture(VIDEO_PATH)
@@ -130,7 +126,7 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     delay = int(1000 / fps)
 
-    print("System Loaded. Stabilization Active.")
+    print("System Loaded. Applying Position Correction...")
 
     while True:
         ret, frame = cap.read()
@@ -156,14 +152,18 @@ def main():
                 raw_x = int(lm.x * w)
                 raw_y = int(lm.y * h)
 
-                # 2. APPLY HEAVY STABILIZATION
-                final_x, final_y = stabilizers[name].update(raw_x, raw_y)
+                # 2. STABILIZE IT
+                stab_x, stab_y = stabilizers[name].update(raw_x, raw_y)
 
-                # Keep dot inside screen
+                # 3. APPLY POSITION CORRECTION (Move Left/Right/Up/Down)
+                final_x = stab_x + MOVE_ALL_POINTS_LEFT_RIGHT
+                final_y = stab_y + MOVE_ALL_POINTS_UP_DOWN
+
+                # Safety Clip
                 final_x = np.clip(final_x, 6, w - 7)
                 final_y = np.clip(final_y, 6, h - 7)
 
-                # 3. MEASURE HEAT
+                # 4. MEASURE HEAT
                 roi = gray_frame[final_y - 6:final_y + 6, final_x - 6:final_x + 6]
                 if roi.size > 0:
                     raw_score = calculate_score(np.mean(roi), global_max_pixel)
@@ -178,29 +178,21 @@ def main():
 
                 if avg_score > worst_score: worst_score = avg_score
 
-                # 4. DRAW VISUALS
+                # 5. DRAW
                 color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
-
-                # Draw "Ghost" dot (Raw) to show stabilization effect
-                # cv2.circle(frame, (raw_x, raw_y), 2, (50, 50, 50), -1)
-
-                # Draw Final Stabilized Dot
                 cv2.circle(frame, (final_x, final_y), 8, color, -1)
                 cv2.circle(frame, (final_x, final_y), 2, (255, 255, 255), -1)
 
-        # CALCULATE LIVE SCORE
         live_fit_score = 0
         if valid_sensors > 0:
             avg_heat = total_leak_score / valid_sensors
             live_fit_score = max(0, 100 - int(avg_heat))
-
             if is_locked:
                 session_fit_scores.append(live_fit_score)
 
         draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score)
-        cv2.imshow('Stabilized Thermal AI', frame)
+        cv2.imshow('Centered Stabilized AI', frame)
 
-        # CONTROLS
         key = cv2.waitKey(delay) & 0xFF
         if key == ord('q'):
             break
