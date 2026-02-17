@@ -2,21 +2,19 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from collections import deque
+import math
 
 # --- CONFIGURATION ---
 VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\without film loose elvis.mp4'
 LEAK_THRESHOLD_SCORE = 45
 
 # --- ALIGNMENT FIX ---
-# Change these if dots are too far Left/Right/Up/Down
-GLOBAL_OFFSET_X = -40  # Move Left (Negative) or Right (Positive)
-GLOBAL_OFFSET_Y = 0  # Move Up (Negative) or Down (Positive)
+GLOBAL_OFFSET_X = -40  # Adjust Left/Right
+GLOBAL_OFFSET_Y = 0  # Adjust Up/Down
 
 # --- STABILIZER SETTINGS ---
-# 0.05 = Ultra Heavy (No Jitter, slight lag)
-# 0.10 = Heavy (Very stable)
-# 0.50 = Light (Fast but shaky)
-STABILITY_STRENGTH = 0.05
+STABILITY_STRENGTH = 0.05  # Heavy smoothing for small jitters
+TELEPORT_DISTANCE = 50  # If dot is > 50px away, SNAP instantly (Fixes start-up lag)
 
 # --- LANDMARK DEFINITIONS ---
 LANDMARK_IDS = {
@@ -29,7 +27,7 @@ LANDMARK_IDS = {
 }
 
 
-# --- STABILIZER CLASS ---
+# --- STABILIZER CLASS (UPDATED) ---
 class PointStabilizer:
     def __init__(self, alpha=STABILITY_STRENGTH):
         self.alpha = alpha
@@ -37,12 +35,22 @@ class PointStabilizer:
         self.prev_y = None
 
     def update(self, new_x, new_y):
+        # 1. First Frame: SNAP instantly
         if self.prev_x is None:
             self.prev_x = new_x
             self.prev_y = new_y
             return int(new_x), int(new_y)
+
+        # 2. Distance Check (The "Teleport" Logic)
+        dist = math.hypot(new_x - self.prev_x, new_y - self.prev_y)
+
+        if dist > TELEPORT_DISTANCE:
+            # Face moved too fast (or startup) -> SNAP instantly
+            self.prev_x = new_x
+            self.prev_y = new_y
+            return int(new_x), int(new_y)
         else:
-            # Heavy Smoothing Math
+            # Small movement -> SMOOTH heavily
             smoothed_x = (self.prev_x * (1 - self.alpha)) + (new_x * self.alpha)
             smoothed_y = (self.prev_y * (1 - self.alpha)) + (new_y * self.alpha)
 
@@ -74,7 +82,7 @@ def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
     h, w, _ = frame.shape
     cv2.rectangle(frame, (0, 0), (320, h), (10, 10, 10), -1)
 
-    cv2.putText(frame, "ULTRA-STABLE AI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(frame, "INSTANT-SNAP AI", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     if not is_locked:
         color = (0, 165, 255)
@@ -86,13 +94,11 @@ def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
     cv2.circle(frame, (290, 25), 6, color, -1)
     cv2.putText(frame, text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
 
-    # Fit Score
     fit_color = (0, 255, 0) if live_fit_score > 60 else (0, 0, 255)
     cv2.putText(frame, "LIVE FIT SCORE:", (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
     cv2.putText(frame, f"{live_fit_score}", (200, 125), cv2.FONT_HERSHEY_SIMPLEX, 0.9, fit_color, 2)
     cv2.line(frame, (10, 140), (310, 140), (50, 50, 50), 1)
 
-    # Bars
     for i, (name, data) in enumerate(sensor_data.items()):
         score = data['score']
         color = (0, 0, 255) if score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
@@ -116,7 +122,6 @@ def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
 def main():
     global is_locked
 
-    # 1. SETUP MEDIA PIPE (Must use Python 3.10!)
     try:
         mp_face_mesh = mp.solutions.face_mesh
         face_mesh = mp_face_mesh.FaceMesh(max_num_faces=1, refine_landmarks=True)
@@ -133,7 +138,7 @@ def main():
     fps = cap.get(cv2.CAP_PROP_FPS) or 30
     delay = int(1000 / fps)
 
-    print("System Loaded. AI Stabilization: ACTIVE.")
+    print("System Loaded. Instant Snap: ACTIVE.")
 
     while True:
         ret, frame = cap.read()
@@ -159,10 +164,10 @@ def main():
                 raw_x = int(lm.x * w)
                 raw_y = int(lm.y * h)
 
-                # 2. APPLY ULTRA STABILIZATION
+                # 2. APPLY INSTANT-SNAP STABILIZATION
                 stab_x, stab_y = stabilizers[name].update(raw_x, raw_y)
 
-                # 3. APPLY ALIGNMENT FIX (Move Left/Right)
+                # 3. APPLY ALIGNMENT FIX
                 final_x = stab_x + GLOBAL_OFFSET_X
                 final_y = stab_y + GLOBAL_OFFSET_Y
 
@@ -199,9 +204,8 @@ def main():
                 session_fit_scores.append(live_fit_score)
 
         draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score)
-        cv2.imshow('Ultra-Stable AI', frame)
+        cv2.imshow('Instant-Snap AI', frame)
 
-        # CONTROLS
         key = cv2.waitKey(delay) & 0xFF
         if key == ord('q'):
             break
