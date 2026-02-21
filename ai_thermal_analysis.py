@@ -6,13 +6,16 @@ import math
 
 # --- CONFIGURATION ---
 VIDEO_PATH = r'C:\Users\Onkar\OneDrive\Desktop\Screen Recordings\without film loose elvis.mp4'
+
+# --- PHYSICS CALIBRATION (RESTORED) ---
+T_MIN = 22.0
+T_MAX = 35.0
 LEAK_THRESHOLD_SCORE = 45
 
 # --- INITIAL CALIBRATION ---
-# You can adjust these live using keys!
-global_offset_x = -40  # Starting guess
+global_offset_x = -40
 global_offset_y = 0
-scale_factor = 1.0  # 1.0 = Normal, 0.8 = Smaller Spread, 1.2 = Wider Spread
+scale_factor = 1.0
 
 # --- STABILIZER SETTINGS ---
 STABILITY_STRENGTH = 0.05
@@ -20,7 +23,7 @@ TELEPORT_DISTANCE = 50
 
 # --- LANDMARK DEFINITIONS ---
 LANDMARK_IDS = {
-    "Nose Bridge": 168,  # Anchor Point
+    "Nose Bridge": 168,
     "Left Cheek": 118,
     "Right Cheek": 347,
     "Left Chin": 58,
@@ -57,16 +60,13 @@ session_fit_scores = []
 is_locked = False
 
 
-def auto_calibrate(frame):
-    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    return np.max(gray)
-
-
-def calculate_score(intensity, max_pixel_val):
+# --- YOUR ORIGINAL MATH FUNCTION ---
+def calculate_score(intensity):
     if np.isnan(intensity): return 0
-    if max_pixel_val == 0: return 0
-    fraction = intensity / max_pixel_val
-    return int(np.clip(fraction * 100, 0, 100))
+    fraction = intensity / 255.0
+    real_temp = T_MIN + (fraction * (T_MAX - T_MIN))
+    score = ((real_temp - T_MIN) / (T_MAX - T_MIN)) * 100
+    return int(np.clip(score, 0, 100))
 
 
 def draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score):
@@ -121,7 +121,6 @@ def main():
     cap = cv2.VideoCapture(VIDEO_PATH)
     ret, frame = cap.read()
     if not ret: return
-    global_max_pixel = auto_calibrate(frame)
     cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
 
     print("Use W/A/S/D to Move. Use Z/X to Resize.")
@@ -142,41 +141,33 @@ def main():
         if results.multi_face_landmarks:
             face = results.multi_face_landmarks[0]
 
-            # Get Nose Position (Center of the face)
             nose_lm = face.landmark[1]
             face_center_x, face_center_y = int(nose_lm.x * w), int(nose_lm.y * h)
 
             for name, landmark_id in LANDMARK_IDS.items():
                 lm = face.landmark[landmark_id]
 
-                # 1. RAW POSITION
                 raw_x = int(lm.x * w)
                 raw_y = int(lm.y * h)
 
-                # 2. SCALE CORRECTION (Spread Adjustment)
-                # Calculate distance from center
                 dist_x = raw_x - face_center_x
                 dist_y = raw_y - face_center_y
 
-                # Multiply by Scale Factor (Spread out or Shrink in)
                 scaled_x = face_center_x + int(dist_x * scale_factor)
                 scaled_y = face_center_y + int(dist_y * scale_factor)
 
-                # 3. POSITION CORRECTION (WASD Offset)
                 final_x = scaled_x + global_offset_x
                 final_y = scaled_y + global_offset_y
 
-                # 4. STABILIZE
                 stab_x, stab_y = stabilizers[name].update(final_x, final_y)
 
-                # Clip
                 stab_x = np.clip(stab_x, 6, w - 7)
                 stab_y = np.clip(stab_y, 6, h - 7)
 
-                # MEASURE
+                # MEASURE USING RESTORED MATH
                 roi = gray_frame[stab_y - 6:stab_y + 6, stab_x - 6:stab_x + 6]
                 if roi.size > 0:
-                    raw_score = calculate_score(np.mean(roi), global_max_pixel)
+                    raw_score = calculate_score(np.mean(roi))
                 else:
                     raw_score = 0
 
@@ -187,9 +178,7 @@ def main():
                 valid_sensors += 1
                 if avg_score > worst_score: worst_score = avg_score
 
-                # DRAW
                 color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
-                # Draw line to center to visualize scale
                 cv2.line(frame, (face_center_x + global_offset_x, face_center_y + global_offset_y), (stab_x, stab_y),
                          (50, 50, 50), 1)
                 cv2.circle(frame, (stab_x, stab_y), 8, color, -1)
@@ -205,14 +194,12 @@ def main():
         draw_dashboard(frame, sensor_data, worst_score, is_locked, live_fit_score)
         cv2.imshow('Calibration Master', frame)
 
-        # INPUTS
         key = cv2.waitKey(30) & 0xFF
         if key == ord('q'):
             break
         elif key == ord(' '):
             is_locked = not is_locked
 
-        # ADJUSTMENTS
         if not is_locked:
             if key == ord('w'):
                 global_offset_y -= 2
@@ -223,9 +210,9 @@ def main():
             elif key == ord('d'):
                 global_offset_x += 2
             elif key == ord('z'):
-                scale_factor -= 0.05  # Shrink
+                scale_factor -= 0.05
             elif key == ord('x'):
-                scale_factor += 0.05  # Expand
+                scale_factor += 0.05
 
     cap.release()
     cv2.destroyAllWindows()
