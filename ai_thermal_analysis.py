@@ -17,10 +17,11 @@ global_offset_x = -40
 global_offset_y = 0
 scale_factor = 1.0
 
-# --- STABILIZER SETTINGS (Tuned for rock-solid tracking) ---
-STABILITY_STRENGTH = 0.015  # Very low for high stability (smoothness)
-TELEPORT_DISTANCE = 60  # Allow quick jumps if the face moves far
-SCORE_HISTORY_LEN = 25  # Smooth out the visual bar jumping
+# --- STABILIZER SETTINGS (THE FIX) ---
+STABILITY_STRENGTH = 0.02   # Smooths out medium movements
+TELEPORT_DISTANCE = 60      # Allow quick jumps if the face moves far
+DEADBAND_RADIUS = 4         # NEW: Ignore ANY movement smaller than 4 pixels (Kills the micro-shake)
+SCORE_HISTORY_LEN = 25      # Smooth out the visual bar jumping
 
 # --- LANDMARK DEFINITIONS ---
 LANDMARK_IDS = {
@@ -34,7 +35,7 @@ LANDMARK_IDS = {
 
 
 class PointStabilizer:
-    """Uses Exponential Moving Average (EMA) to kill jitter."""
+    """Uses Exponential Moving Average (EMA) + Deadband to kill jitter."""
 
     def __init__(self, alpha=STABILITY_STRENGTH):
         self.alpha = alpha
@@ -46,13 +47,19 @@ class PointStabilizer:
             self.prev_x, self.prev_y = new_x, new_y
             return int(new_x), int(new_y)
 
-        # Distance check to prevent 'trailing' during fast cuts
+        # Measure how far MediaPipe is trying to move the dot
         dist = math.hypot(new_x - self.prev_x, new_y - self.prev_y)
+
+        # 1. TELEPORT: Fast head movements snap instantly to prevent lag
         if dist > TELEPORT_DISTANCE:
             self.prev_x, self.prev_y = new_x, new_y
             return int(new_x), int(new_y)
 
-        # Apply smoothing
+        # 2. DEADBAND (THE FIX): If it's just a tiny jitter, IGNORE IT. Freeze the point.
+        if dist < DEADBAND_RADIUS:
+            return int(self.prev_x), int(self.prev_y)
+
+        # 3. SMOOTHING: Normal, intentional head movement gets smoothed
         smoothed_x = (self.prev_x * (1 - self.alpha)) + (new_x * self.alpha)
         smoothed_y = (self.prev_y * (1 - self.alpha)) + (new_y * self.alpha)
 
