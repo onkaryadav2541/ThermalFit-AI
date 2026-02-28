@@ -16,12 +16,7 @@ LEAK_THRESHOLD_SCORE = 45
 global_offset_x = -40
 global_offset_y = 0
 scale_factor = 1.0
-
-# --- STABILIZER SETTINGS (THE FIX) ---
-STABILITY_STRENGTH = 0.02   # Smooths out medium movements
-TELEPORT_DISTANCE = 60      # Allow quick jumps if the face moves far
-DEADBAND_RADIUS = 4         # NEW: Ignore ANY movement smaller than 4 pixels (Kills the micro-shake)
-SCORE_HISTORY_LEN = 25      # Smooth out the visual bar jumping
+SCORE_HISTORY_LEN = 25
 
 # --- LANDMARK DEFINITIONS ---
 LANDMARK_IDS = {
@@ -34,11 +29,13 @@ LANDMARK_IDS = {
 }
 
 
-class PointStabilizer:
-    """Uses Exponential Moving Average (EMA) + Deadband to kill jitter."""
+class SmartVelocityStabilizer:
+    """Dynamic filter: Heavy smoothing when still, light smoothing when moving."""
 
-    def __init__(self, alpha=STABILITY_STRENGTH):
-        self.alpha = alpha
+    def __init__(self, min_alpha=0.01, max_alpha=0.3, sensitivity=0.05):
+        self.min_alpha = min_alpha  # Max glue (when sitting still)
+        self.max_alpha = max_alpha  # Min glue (when moving fast)
+        self.sensitivity = sensitivity  # How fast it switches between glued and moving
         self.prev_x = None
         self.prev_y = None
 
@@ -47,21 +44,25 @@ class PointStabilizer:
             self.prev_x, self.prev_y = new_x, new_y
             return int(new_x), int(new_y)
 
-        # Measure how far MediaPipe is trying to move the dot
+        # 1. Calculate Velocity (How many pixels did the target move?)
         dist = math.hypot(new_x - self.prev_x, new_y - self.prev_y)
 
-        # 1. TELEPORT: Fast head movements snap instantly to prevent lag
-        if dist > TELEPORT_DISTANCE:
+        # 2. Teleport if distance is massive (prevents huge trails on quick cuts)
+        if dist > 80:
             self.prev_x, self.prev_y = new_x, new_y
             return int(new_x), int(new_y)
 
-        # 2. DEADBAND (THE FIX): If it's just a tiny jitter, IGNORE IT. Freeze the point.
-        if dist < DEADBAND_RADIUS:
-            return int(self.prev_x), int(self.prev_y)
+        # 3. DYNAMIC ALPHA MATH (The Magic)
+        # If dist is small (jitter), alpha stays close to min_alpha (frozen).
+        # If dist is large (head turn), alpha jumps toward max_alpha (fast tracking).
+        dynamic_alpha = self.min_alpha + (dist * self.sensitivity)
 
-        # 3. SMOOTHING: Normal, intentional head movement gets smoothed
-        smoothed_x = (self.prev_x * (1 - self.alpha)) + (new_x * self.alpha)
-        smoothed_y = (self.prev_y * (1 - self.alpha)) + (new_y * self.alpha)
+        # Clamp it so it doesn't exceed our maximum allowed tracking speed
+        dynamic_alpha = min(self.max_alpha, dynamic_alpha)
+
+        # 4. Apply the dynamic smoothing
+        smoothed_x = (self.prev_x * (1 - dynamic_alpha)) + (new_x * dynamic_alpha)
+        smoothed_y = (self.prev_y * (1 - dynamic_alpha)) + (new_y * dynamic_alpha)
 
         self.prev_x, self.prev_y = smoothed_x, smoothed_y
         return int(smoothed_x), int(smoothed_y)
@@ -69,8 +70,8 @@ class PointStabilizer:
 
 # Initialize trackers
 sensor_data = {name: {'score': 0, 'history': deque(maxlen=SCORE_HISTORY_LEN)} for name in LANDMARK_IDS}
-stabilizers = {name: PointStabilizer() for name in LANDMARK_IDS}
-center_stabilizer = PointStabilizer(alpha=0.08)  # Slightly faster for the anchor
+stabilizers = {name: SmartVelocityStabilizer() for name in LANDMARK_IDS}
+center_stabilizer = SmartVelocityStabilizer(min_alpha=0.03, max_alpha=0.4)  # Face anchor can move a bit faster
 session_fit_scores = []
 is_locked = False
 
@@ -85,9 +86,8 @@ def calculate_score(intensity):
 
 def draw_dashboard(frame, sensor_data, is_locked, live_fit_score):
     h, w, _ = frame.shape
-    # Left Panel
     cv2.rectangle(frame, (0, 0), (320, h), (15, 15, 15), -1)
-    cv2.putText(frame, "STABILIZED ANALYTICS", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    cv2.putText(frame, "SMART ANALYTICS", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
     status_color = (0, 255, 0) if is_locked else (0, 165, 255)
     status_text = "MODE: LOCKED" if is_locked else "MODE: ADJUSTING"
@@ -96,15 +96,12 @@ def draw_dashboard(frame, sensor_data, is_locked, live_fit_score):
     cv2.putText(frame, "WASD: Move | ZX: Scale | Space: Lock", (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (180, 180, 180),
                 1)
 
-    # Offset Info
     cv2.putText(frame, f"X:{global_offset_x} Y:{global_offset_y} S:{scale_factor:.2f}", (10, 120),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-    # Fit Score
     fit_color = (0, 255, 0) if live_fit_score > 60 else (0, 0, 255)
     cv2.putText(frame, f"FIT SCORE: {live_fit_score}%", (10, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.8, fit_color, 2)
 
-    # Sensor Bars
     for i, (name, data) in enumerate(sensor_data.items()):
         score = data['score']
         color = (0, 0, 255) if score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
@@ -112,9 +109,7 @@ def draw_dashboard(frame, sensor_data, is_locked, live_fit_score):
 
         cv2.putText(frame, name, (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
         bar_len = int(score * 1.5)
-        # Background bar
         cv2.rectangle(frame, (110, y_pos - 12), (260, y_pos + 4), (40, 40, 40), -1)
-        # Value bar
         cv2.rectangle(frame, (110, y_pos - 12), (110 + bar_len, y_pos + 4), color, -1)
         cv2.putText(frame, f"{score}", (270, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
@@ -155,26 +150,23 @@ def main():
             for name, landmark_id in LANDMARK_IDS.items():
                 lm = face.landmark[landmark_id]
 
-                # Calculate relative distance from anchor
+                # Relative distance from anchor
                 dist_x = (lm.x * w) - (raw_nose.x * w)
                 dist_y = (lm.y * h) - (raw_nose.y * h)
 
-                # Apply Scale and Global Offset relative to stabilized anchor
+                # Target coordinates including WASD/Scale adjustments
                 target_x = anchor_x + int(dist_x * scale_factor) + global_offset_x
                 target_y = anchor_y + int(dist_y * scale_factor) + global_offset_y
 
-                # 2. STABILIZE INDIVIDUAL SENSOR POINT
+                # 2. DYNAMICALLY STABILIZE SENSOR POINT
                 stab_x, stab_y = stabilizers[name].update(target_x, target_y)
 
-                # Clamp to frame boundaries
                 stab_x = np.clip(stab_x, 10, w - 10)
                 stab_y = np.clip(stab_y, 10, h - 10)
 
-                # Read Thermal/Grayscale Data
                 roi = gray_frame[stab_y - 5:stab_y + 5, stab_x - 5:stab_x + 5]
                 raw_score = calculate_score(np.mean(roi)) if roi.size > 0 else 0
 
-                # Smooth the data value
                 sensor_data[name]['history'].append(raw_score)
                 avg_score = int(sum(sensor_data[name]['history']) / len(sensor_data[name]['history']))
                 sensor_data[name]['score'] = avg_score
@@ -182,15 +174,12 @@ def main():
                 total_leak_score += avg_score
                 valid_sensors += 1
 
-                # Visualization
                 color = (0, 0, 255) if avg_score > LEAK_THRESHOLD_SCORE else (0, 255, 0)
-                # Draw "connection" line to show tracking
                 cv2.line(frame, (anchor_x + global_offset_x, anchor_y + global_offset_y), (stab_x, stab_y),
                          (100, 100, 100), 1)
                 cv2.circle(frame, (stab_x, stab_y), 6, color, -1)
                 cv2.circle(frame, (stab_x, stab_y), 2, (255, 255, 255), -1)
 
-        # Calculate Fit Score
         live_fit_score = 0
         if valid_sensors > 0:
             avg_heat = total_leak_score / valid_sensors
@@ -198,7 +187,7 @@ def main():
             if is_locked: session_fit_scores.append(live_fit_score)
 
         draw_dashboard(frame, sensor_data, is_locked, live_fit_score)
-        cv2.imshow('Calibration Master - Pro Stability', frame)
+        cv2.imshow('Calibration Master - Smart Velocity', frame)
 
         key = cv2.waitKey(20) & 0xFF
         if key == ord('q'):
